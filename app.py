@@ -8,13 +8,17 @@ import streamlit.components.v1 as components
 import paho.mqtt.client as mqtt
 from bokeh.models import Button, CustomJS
 from streamlit_bokeh_events import streamlit_bokeh_events
+from streamlit_autorefresh import st_autorefresh
+
+# Refresco periódico para mantener actualizado el estado del ESP32.
+st_autorefresh(interval=3000, key="garage_status_refresh")
 
 
 # ============================================================
 # CONFIGURACIÓN
 # ============================================================
 st.set_page_config(
-    page_title="WoWy | Garage Control",
+    page_title="Garage Control | Interactive Systems",
     page_icon="🚘",
     layout="wide",
     initial_sidebar_state="collapsed",
@@ -36,6 +40,7 @@ defaults = {
     "mqtt_error": "",
     "last_voice_text": "",
     "voice_message": "",
+    "esp32_online": False,
 }
 for key, value in defaults.items():
     if key not in st.session_state:
@@ -45,20 +50,38 @@ for key, value in defaults.items():
 # ============================================================
 # MQTT
 # ============================================================
+def _on_mqtt_message(client, userdata, msg):
+    """Recibe el heartbeat publicado por el ESP32 en Wokwi."""
+    if msg.topic == f"{TOPIC}/status":
+        value = msg.payload.decode("utf-8", errors="ignore").strip().lower()
+        st.session_state.esp32_online = (value == "online")
+
+
 def get_mqtt_client():
     client = st.session_state.mqtt_client
     if client is not None and client.is_connected():
         return client
 
     try:
-        # Compatible con paho-mqtt 2.x
         client = mqtt.Client(
             callback_api_version=mqtt.CallbackAPIVersion.VERSION1,
-            client_id="WoWy_" + uuid.uuid4().hex[:8],
+            client_id="GarageUI_" + uuid.uuid4().hex[:8],
             protocol=mqtt.MQTTv311,
         )
+        client.on_message = _on_mqtt_message
         client.connect(BROKER, PORT, keepalive=45)
         client.loop_start()
+
+        # Espera breve por el CONNACK; evita marcar conectado antes de tiempo.
+        import time
+        deadline = time.time() + 4
+        while not client.is_connected() and time.time() < deadline:
+            time.sleep(0.1)
+
+        if not client.is_connected():
+            raise ConnectionError("El broker no confirmó la conexión MQTT en 4 segundos.")
+
+        client.subscribe(f"{TOPIC}/status", qos=0)
         st.session_state.mqtt_client = client
         st.session_state.mqtt_connected = True
         st.session_state.mqtt_error = ""
@@ -265,6 +288,18 @@ div[data-testid="stMetric"] {
 }
 div[data-testid="stMetricLabel"] { color: var(--muted); }
 div[data-testid="stMetricValue"] { color: var(--text); }
+.voice-card {
+  display:flex; align-items:center; gap:14px; padding:16px;
+  border:1px solid rgba(245,197,94,.28); border-radius:16px;
+  background:linear-gradient(135deg, rgba(245,197,94,.09), rgba(255,255,255,.025));
+  margin:8px 0 12px;
+}
+.voice-icon { display:flex; align-items:center; justify-content:center; flex:0 0 44px;
+  width:44px; height:44px; border-radius:14px; color:#2a1a0b;
+  background:linear-gradient(135deg,#ffe38b,#c18a24); font-size:24px; font-weight:800;
+}
+.voice-card-title { color:#fff0c7; font-weight:800; font-size:15px; }
+.voice-card-sub { color:#c6aaa0; font-size:12px; margin-top:3px; }
 .voice-note {
   padding: 12px 14px;
   border: 1px solid var(--line);
@@ -281,7 +316,7 @@ footer {visibility: hidden;}
 # ENCABEZADO
 # ============================================================
 st.markdown('<div class="eyebrow">INTERACTIVE AUTOMOTIVE SYSTEMS / 001</div>', unsafe_allow_html=True)
-st.markdown('<div class="hero-title">WoWy <span style="color:#f2c14e">Garage.</span></div>', unsafe_allow_html=True)
+st.markdown('<div class="hero-title">GARAGE <span style="color:#f2c14e">CONTROL.</span></div>', unsafe_allow_html=True)
 st.markdown(
     '<div class="hero-sub">Una interfaz multimodal para controlar funciones del vehículo '
     'con voz o con controles directos. Streamlit · MQTT · ESP32</div>',
@@ -292,9 +327,13 @@ st.write("")
 connection_col, topic_col, mode_col = st.columns([1.2, 1.2, 1.5])
 with connection_col:
     if st.session_state.mqtt_connected:
-        st.markdown('<div class="status-pill"><span class="status-dot" style="background:#42d392"></span> MQTT CONECTADO</div>', unsafe_allow_html=True)
+        st.markdown('<div class="status-pill"><span class="status-dot" style="background:#42d392"></span> BROKER MQTT CONECTADO</div>', unsafe_allow_html=True)
     else:
-        st.markdown('<div class="status-pill"><span class="status-dot" style="background:#f2c14e"></span> MQTT DESCONECTADO</div>', unsafe_allow_html=True)
+        st.markdown('<div class="status-pill"><span class="status-dot" style="background:#ff6b6b"></span> BROKER MQTT DESCONECTADO</div>', unsafe_allow_html=True)
+    if st.session_state.mqtt_connected and st.session_state.esp32_online:
+        st.markdown('<div class="status-pill" style="margin-top:8px"><span class="status-dot" style="background:#42d392"></span> ESP32 / WOKWI EN LÍNEA</div>', unsafe_allow_html=True)
+    else:
+        st.markdown('<div class="status-pill" style="margin-top:8px"><span class="status-dot" style="background:#f2c14e"></span> ESP32 / WOKWI SIN HEARTBEAT</div>', unsafe_allow_html=True)
 with topic_col:
     st.markdown(f'<div class="status-pill">TOPIC&nbsp; / &nbsp;{TOPIC}</div>', unsafe_allow_html=True)
 with mode_col:
@@ -428,7 +467,7 @@ with left:
         <div class="readout"><div class="label">DOOR SYSTEM</div><div class="value {'red' if doors_open else ''}">{"OPEN / 180°" if doors_open else "CLOSED / 90°"}</div></div>
         <div class="readout"><div class="label">LIGHTING SYSTEM</div><div class="value {'gold' if lights_on else ''}">{"HEADLIGHTS ON" if lights_on else "HEADLIGHTS OFF"}</div></div>
       </div>
-      <div class="bottomline"><span>WOWY GARAGE / PROTOTYPE</span><span>ESP32 + MQTT</span></div>
+      <div class="bottomline"><span>GARAGE CONTROL / PROTOTYPE</span><span>ESP32 + MQTT</span></div>
     </div></body></html>
     """
     components.html(car_html, height=470, scrolling=False)
@@ -480,7 +519,8 @@ with right:
     st.subheader("Control por voz")
     st.caption("Di una orden breve en español. Ej.: «abre la puerta» o «enciende las luces».")
 
-    voice_button = Button(label="🎙  EMPEZAR A ESCUCHAR", width=280)
+    st.markdown('<div class="voice-card"><div class="voice-icon">◉</div><div><div class="voice-card-title">Habla con tu vehículo</div><div class="voice-card-sub">Pulsa el botón y di una orden. El micrófono se activa solo durante la escucha.</div></div></div>', unsafe_allow_html=True)
+    voice_button = Button(label="🎙  INICIAR RECONOCIMIENTO DE VOZ", width=360, height=54, button_type="warning")
     voice_button.js_on_event(
         "button_click",
         CustomJS(code="""
@@ -538,12 +578,13 @@ with right:
 st.write("")
 st.markdown("---")
 st.markdown('<div class="section-label">SYSTEM STATUS / 03</div>', unsafe_allow_html=True)
-m1, m2, m3 = st.columns(3)
+m1, m2, m3, m4 = st.columns(4)
 with m1:
     st.metric("Puerta", "Abierta" if st.session_state.doors_open else "Cerrada")
 with m2:
     st.metric("Luces", "Encendidas" if st.session_state.lights_on else "Apagadas")
 with m3:
-    st.metric("MQTT", "Conectado" if st.session_state.mqtt_connected else "Desconectado")
+    st.metric("Broker MQTT", "Conectado" if st.session_state.mqtt_connected else "Desconectado")
+with m4:
+    st.metric("ESP32 / Wokwi", "En línea" if st.session_state.esp32_online else "Sin señal")
 st.caption(f"Broker: {BROKER}:{PORT}  ·  Tópico: {TOPIC}  ·  Última orden enviada: {st.session_state.last_command}")
-
